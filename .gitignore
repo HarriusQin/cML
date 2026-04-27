@@ -2,6 +2,9 @@
 
 llm.c/
 llama2.c/
+dl_reference/
+doc/
+reference/
 
 # Binaries
 test_csv
