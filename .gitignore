@@ -1,10 +1,18 @@
 .DS_Store
+.workbuddy/
 
+# Some directories on my local machine to ignore
 llm.c/
 llama2.c/
 dl_reference/
 doc/
 reference/
+
+*.dSYM/
+**/.DS_Store
+**/.vscode/
+**/.idea/
+**/*.dSYM/
 
 # Binaries
 test_csv
