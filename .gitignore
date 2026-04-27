@@ -2,3 +2,23 @@
 
 llm.c/
 llama2.c/
+
+# Binaries
+test_csv
+test_dataset
+test_iris
+test_binary
+test_gnb
+test_dt
+test_rf_n_ada
+test_ml
+test_softmax_benchmark
+test_softmax_benchmark_asan
+test_idx
+test_tensor
+test_mlp
+test_lenet5
+test_rnn
+test_lstm
+test_transformer
+main
