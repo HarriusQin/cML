@@ -310,7 +310,47 @@ static void layer_norm_free(LayerNorm* ln) {
 }
 
 /* ============================================================================
- * Forward: Multi-Head Attention
+ * Block-wise Matrix Multiplication (cache-friendly)
+ * ============================================================================ */
+
+#define BLOCK_SIZE 16
+
+static void gemm_block(float* c, const float* a, const float* b,
+                       size_t M, size_t N, size_t K) {
+    // Blocked gemm: c[M,N] = a[M,K] @ b[K,N] with blocking for cache
+    for (size_t i = 0; i < M; i++) {
+        for (size_t jj = 0; jj < N; jj += BLOCK_SIZE) {
+            size_t j_end = (jj + BLOCK_SIZE < N) ? jj + BLOCK_SIZE : N;
+            for (size_t j = jj; j < j_end; j++) {
+                float sum = 0.0f;
+                for (size_t k = 0; k < K; k++) {
+                    sum += a[i * K + k] * b[k * N + j];
+                }
+                c[i * N + j] = sum;
+            }
+        }
+    }
+}
+
+static void gemm_block_transpose_b(float* c, const float* a, const float* b,
+                                   size_t M, size_t N, size_t K) {
+    // Blocked gemm with b transposed: c[M,N] = a[M,K] @ b[N,K].T
+    for (size_t i = 0; i < M; i++) {
+        for (size_t j = 0; j < N; j++) {
+            float sum = 0.0f;
+            for (size_t kk = 0; kk < K; kk += BLOCK_SIZE) {
+                size_t k_end = (kk + BLOCK_SIZE < K) ? kk + BLOCK_SIZE : K;
+                for (size_t k = kk; k < k_end; k++) {
+                    sum += a[i * K + k] * b[j * K + k];
+                }
+            }
+            c[i * N + j] = sum;
+        }
+    }
+}
+
+/* ============================================================================
+ * Forward: Multi-Head Attention (optimized with block multiplication)
  * ============================================================================ */
 
 static Tensor* mha_forward(MHAttention* mha, const Tensor* x, bool causal) {
@@ -327,6 +367,7 @@ static Tensor* mha_forward(MHAttention* mha, const Tensor* x, bool causal) {
     float* w_v = (float*)mha->W_v->data;
 
     // Compute Q, K, V: [batch, seq_len, d_model]
+    // Q = x @ W_q.T, K = x @ W_k.T, V = x @ W_v.T
     size_t qkv_shape[] = {batch, seq_len, d_model};
     Tensor* Q = tensor_create(TENSOR_DTYPE_F32, TENSOR_LAYOUT_NCHW, qkv_shape, 3);
     Tensor* K = tensor_create(TENSOR_DTYPE_F32, TENSOR_LAYOUT_NCHW, qkv_shape, 3);
@@ -336,20 +377,34 @@ static Tensor* mha_forward(MHAttention* mha, const Tensor* x, bool causal) {
     float* k_data = (float*)K->data;
     float* v_data = (float*)V->data;
 
-    // Q = x @ W_q.T, K = x @ W_k.T, V = x @ W_v.T
+    // Process each batch and sequence position with blocking
     for (size_t b = 0; b < batch; b++) {
+        size_t x_base = b * seq_len * d_model;
+        size_t q_base = b * seq_len * d_model;
+        size_t k_base = b * seq_len * d_model;
+        size_t v_base = b * seq_len * d_model;
+
         for (size_t s = 0; s < seq_len; s++) {
+            size_t x_row = x_base + s * d_model;
+            size_t q_row = q_base + s * d_model;
+            size_t k_row = k_base + s * d_model;
+            size_t v_row = v_base + s * d_model;
+
+            // Blocked QKV computation
             for (size_t i = 0; i < d_model; i++) {
                 float q_sum = 0, k_sum = 0, v_sum = 0;
-                for (size_t j = 0; j < d_model; j++) {
-                    float x_val = x_data[b * seq_len * d_model + s * d_model + j];
-                    q_sum += x_val * w_q[i * d_model + j];
-                    k_sum += x_val * w_k[i * d_model + j];
-                    v_sum += x_val * w_v[i * d_model + j];
+                for (size_t kk = 0; kk < d_model; kk += BLOCK_SIZE) {
+                    size_t k_end = (kk + BLOCK_SIZE < d_model) ? kk + BLOCK_SIZE : d_model;
+                    for (size_t k = kk; k < k_end; k++) {
+                        float x_val = x_data[x_row + k];
+                        q_sum += x_val * w_q[i * d_model + k];
+                        k_sum += x_val * w_k[i * d_model + k];
+                        v_sum += x_val * w_v[i * d_model + k];
+                    }
                 }
-                q_data[b * seq_len * d_model + s * d_model + i] = q_sum;
-                k_data[b * seq_len * d_model + s * d_model + i] = k_sum;
-                v_data[b * seq_len * d_model + s * d_model + i] = v_sum;
+                q_data[q_row + i] = q_sum;
+                k_data[k_row + i] = k_sum;
+                v_data[v_row + i] = v_sum;
             }
         }
     }
@@ -392,17 +447,26 @@ static Tensor* mha_forward(MHAttention* mha, const Tensor* x, bool causal) {
     float* k_h = (float*)K_reshaped->data;
     float* scores = (float*)attn_scores->data;
 
+    // Compute attention scores with blocking
     for (size_t b = 0; b < batch; b++) {
         for (size_t h = 0; h < n_heads; h++) {
+            size_t q_base = b * n_heads * seq_len * d_k + h * seq_len * d_k;
+            size_t k_base = b * n_heads * seq_len * d_k + h * seq_len * d_k;
+            size_t s_base = b * n_heads * seq_len * seq_len + h * seq_len * seq_len;
+
             for (size_t i = 0; i < seq_len; i++) {
+                size_t qi_base = q_base + i * d_k;
+                size_t si_base = s_base + i * seq_len;
+
                 for (size_t j = 0; j < seq_len; j++) {
                     float sum = 0.0f;
-                    for (size_t k = 0; k < d_k; k++) {
-                        size_t q_idx = b * n_heads * seq_len * d_k + h * seq_len * d_k + i * d_k + k;
-                        size_t k_idx = b * n_heads * seq_len * d_k + h * seq_len * d_k + j * d_k + k;
-                        sum += q_h[q_idx] * k_h[k_idx];
+                    for (size_t kk = 0; kk < d_k; kk += BLOCK_SIZE) {
+                        size_t k_end = (kk + BLOCK_SIZE < d_k) ? kk + BLOCK_SIZE : d_k;
+                        for (size_t k = kk; k < k_end; k++) {
+                            sum += q_h[qi_base + k] * k_h[k_base + j * d_k + k];
+                        }
                     }
-                    scores[b * n_heads * seq_len * seq_len + h * seq_len * seq_len + i * seq_len + j] = sum * scale;
+                    scores[si_base + j] = sum * scale;
                 }
             }
         }

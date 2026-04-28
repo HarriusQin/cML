@@ -264,26 +264,27 @@ static int test_shakespeare(void) {
     }
     printf("Vocab: %zu\n", vocab_size);
 
-    // Medium model - balance quality and speed
+    // Small transformer with self-attention (stable training)
     TransformerConfig config = {
         .vocab_size = vocab_size,
-        .d_model = 128,
-        .n_heads = 4,
+        .d_model = 48,
+        .n_heads = 2,
         .n_encoder_layers = 0,
-        .n_decoder_layers = 0,
-        .d_ff = 256,
-        .max_seq_len = 64,
+        .n_decoder_layers = 2,
+        .d_ff = 96,
+        .max_seq_len = 32,
         .dropout_p = 0.0f
     };
 
     Transformer* tr = transformer_create(config);
     if (!tr) { free(text); return 1; }
 
-    size_t seq_len = 32;
-    size_t train_steps = 3000;
-    float lr = 0.001f;
+    size_t seq_len = 16;
+    size_t train_steps = 2000;
+    float lr = 0.0001f;  // Smaller LR for stability
     float weight_decay = 0.0001f;
-    size_t batch_size = 16;
+    size_t batch_size = 8;
+    float max_grad = 1.0f;  // Gradient clipping
 
     printf("Training Transformer (d_model=%zu, layers=%zu, lr=%.5f)...\n", config.d_model, config.n_decoder_layers, lr);
 
@@ -311,52 +312,47 @@ static int test_shakespeare(void) {
                 tgt_data[i] = (uint32_t)(char_to_idx[c_tgt] % vocab_size);
             }
 
-            // Use simplified version (bypasses decoder, trains embeddings directly)
-            // This is fast and effective for character-level language modeling
-            transformer_compute_loss_and_grad_simple(tr, input, targets, grad_emb, grad_pos, grad_W, grad_b);
+            // Use full backward pass through decoder layers (with self-attention)
+            transformer_compute_loss_and_grad_full(tr, input, targets, grad_emb, grad_pos, grad_W, grad_b);
             tensor_free(input); tensor_free(targets);
         }
 
-        // Gradient clipping
-        float max_grad = 0.0f;
-        for (size_t i = 0; i < emb_size; i++) {
-            float g = grad_emb[i] / batch_size;
-            if (g > max_grad) max_grad = g;
-            if (-g > max_grad) max_grad = -g;
+        // Fixed gradient clipping for stability
+        float scale = 1.0f;
+        if (max_grad > 1.0f) {
+            scale = max_grad / batch_size;
+            if (scale > 0.0f) scale = 1.0f / scale;
+            else scale = 1.0f;
         }
-        for (size_t i = 0; i < pos_size; i++) {
-            float g = grad_pos[i] / batch_size;
-            if (g > max_grad) max_grad = g;
-            if (-g > max_grad) max_grad = -g;
-        }
-        for (size_t i = 0; i < W_size; i++) {
-            float g = grad_W[i] / batch_size;
-            if (g > max_grad) max_grad = g;
-            if (-g > max_grad) max_grad = -g;
-        }
-        for (size_t i = 0; i < config.vocab_size; i++) {
-            float g = grad_b[i] / batch_size;
-            if (g > max_grad) max_grad = g;
-            if (-g > max_grad) max_grad = -g;
-        }
-        float scale = (max_grad > 1.0f) ? 1.0f / max_grad : 1.0f;
 
-        // Update all parameters
+        // Apply gradient and update all parameters
         float* emb = (float*)tr->token_embedding->data;
         float* pos = (float*)tr->pos_embedding->data;
         float* W_out = (float*)tr->W_out->data;
         float* b_out = (float*)tr->b_out->data;
         for (size_t i = 0; i < emb_size; i++) {
-            emb[i] -= lr * (grad_emb[i] * scale / batch_size);
+            float g = grad_emb[i] / batch_size;
+            if (g > max_grad) g = max_grad;
+            if (g < -max_grad) g = -max_grad;
+            emb[i] -= lr * g;
         }
         for (size_t i = 0; i < pos_size; i++) {
-            pos[i] -= lr * (grad_pos[i] * scale / batch_size);
+            float g = grad_pos[i] / batch_size;
+            if (g > max_grad) g = max_grad;
+            if (g < -max_grad) g = -max_grad;
+            pos[i] -= lr * g;
         }
         for (size_t i = 0; i < W_size; i++) {
-            W_out[i] -= lr * (grad_W[i] * scale / batch_size + weight_decay * W_out[i]);
+            float g = grad_W[i] / batch_size;
+            if (g > max_grad) g = max_grad;
+            if (g < -max_grad) g = -max_grad;
+            W_out[i] -= lr * (g + weight_decay * W_out[i]);
         }
         for (size_t i = 0; i < config.vocab_size; i++) {
-            b_out[i] -= lr * grad_b[i] * scale / batch_size;
+            float g = grad_b[i] / batch_size;
+            if (g > max_grad) g = max_grad;
+            if (g < -max_grad) g = -max_grad;
+            b_out[i] -= lr * g;
         }
 
         free(grad_emb); free(grad_pos); free(grad_W); free(grad_b);
