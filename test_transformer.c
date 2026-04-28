@@ -80,8 +80,8 @@ static int test_transformer_forward(void) {
     if (output->ndim != 3 ||
         output->shape[0] != 2 ||
         output->shape[1] != 8 ||
-        output->shape[2] != 64) {
-        printf("FAIL: expected shape [2, 8, 64], got [%zu, %zu, %zu]\n",
+        output->shape[2] != 100) {
+        printf("FAIL: expected shape [2, 8, 100], got [%zu, %zu, %zu]\n",
                output->shape[0], output->shape[1], output->shape[2]);
         transformer_free(model);
         tensor_free(input);
@@ -127,7 +127,7 @@ static int test_transformer_multi_head_attention(void) {
         data[i] = (float)(rand() % 100) / 100.0f;
     }
 
-    Tensor* output = mha_forward(mha, input);
+    Tensor* output = mha_forward(mha, input, false);
 
     if (!output) {
         printf("FAIL: output is NULL\n");

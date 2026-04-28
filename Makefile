@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c99 -lm -I.
-TARGETS = test_csv test_dataset test_iris test_binary test_gnb test_dt test_rf_n_ada test_ml test_softmax_benchmark test_idx test_tensor test_mlp test_lenet5 test_rnn test_lstm test_transformer main
+TARGETS = test_csv test_dataset test_iris test_binary test_gnb test_dt test_rf_n_ada test_ml test_softmax_benchmark test_idx test_tensor test_mlp test_lenet5 test_rnn test_lstm test_transformer test_dl_realdata_v2 main
 
 .PHONY: all test test_dl clean
 
@@ -58,6 +58,9 @@ test_lstm: test_lstm.c lstm.h tensor.h
 test_transformer: test_transformer.c transformer.h tensor.h
 	$(CC) $(CFLAGS) -o $@ test_transformer.c -lm
 
+test_dl_realdata_v2: test_dl_realdata_v2.c tensor.h idx.h rnn.h lstm.h transformer.h
+	$(CC) $(CFLAGS) -o $@ test_dl_realdata_v2.c -lm
+
 test_dl: test_lenet5 test_rnn test_lstm test_transformer
 	@echo "=== Running LeNet-5 Tests ==="
 	./test_lenet5
@@ -91,5 +94,7 @@ test: test_csv test_dataset test_iris test_binary test_gnb test_dt
 	./test_dt data/iris.csv
 
 clean:
-	rm -f $(TARGETS) test_softmax_benchmark test_softmax_benchmark_asan test_dl rf_n_ada
-	rm -rf *.dSYM
+	rm -f $(TARGETS) test_softmax_benchmark_asan test_dl_realdata test_lenet5_bin test_mlp_asan test_mlp_iris
+	rm -f test/test_mlp_framework test/test_mlp_iris test/test_transformer
+	rm -f tests/test_tensor_edge_cases tests/test_tensor_edge_cases_asan
+	rm -rf *.dSYM tests/*.dSYM

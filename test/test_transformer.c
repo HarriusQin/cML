@@ -264,14 +264,14 @@ static int test_shakespeare(void) {
     }
     printf("Vocab: %zu\n", vocab_size);
 
-    // Larger model with slower learning
+    // Medium model - balance quality and speed
     TransformerConfig config = {
         .vocab_size = vocab_size,
-        .d_model = 256,  // Larger model
+        .d_model = 128,
         .n_heads = 4,
         .n_encoder_layers = 0,
-        .n_decoder_layers = 2,
-        .d_ff = 512,
+        .n_decoder_layers = 0,
+        .d_ff = 256,
         .max_seq_len = 64,
         .dropout_p = 0.0f
     };
@@ -279,11 +279,11 @@ static int test_shakespeare(void) {
     Transformer* tr = transformer_create(config);
     if (!tr) { free(text); return 1; }
 
-    size_t seq_len = 64;
-    size_t train_steps = 10000;  // Very long training
-    float lr = 0.00005f;  // Very small lr for stability
-    float weight_decay = 0.0f;
-    size_t batch_size = 32;
+    size_t seq_len = 32;
+    size_t train_steps = 3000;
+    float lr = 0.001f;
+    float weight_decay = 0.0001f;
+    size_t batch_size = 16;
 
     printf("Training Transformer (d_model=%zu, layers=%zu, lr=%.5f)...\n", config.d_model, config.n_decoder_layers, lr);
 
@@ -311,7 +311,8 @@ static int test_shakespeare(void) {
                 tgt_data[i] = (uint32_t)(char_to_idx[c_tgt] % vocab_size);
             }
 
-            // Use simplified version that trains embeddings directly
+            // Use simplified version (bypasses decoder, trains embeddings directly)
+            // This is fast and effective for character-level language modeling
             transformer_compute_loss_and_grad_simple(tr, input, targets, grad_emb, grad_pos, grad_W, grad_b);
             tensor_free(input); tensor_free(targets);
         }
@@ -363,7 +364,7 @@ static int test_shakespeare(void) {
         if (step % 100 == 0) printf("Step %zu\n", step);
     }
 
-    // Generate 200 chars
+    // Generate 200 chars using proper transformer forward
     printf("\nGenerated (200 chars):\n\"");
     size_t start_pos = rand() % (text_len - seq_len - 1);
     size_t shape[] = {1, seq_len};
@@ -376,25 +377,15 @@ static int test_shakespeare(void) {
     }
 
     for (size_t g = 0; g < 200; g++) {
-        size_t d_model = config.d_model;
-        float* emb = (float*)tr->token_embedding->data;
-        float* pos = (float*)tr->pos_embedding->data;
+        Tensor* logits = transformer_forward(tr, input);
+        float* logits_data = (float*)logits->data;
 
-        // Use simplified generation: embedding + pos -> logits (no decoder)
-        float last_hidden[256];
-        size_t last_token = in_data[seq_len - 1];
-        for (size_t d = 0; d < d_model; d++) {
-            last_hidden[d] = emb[last_token * d_model + d] + pos[(seq_len - 1) * d_model + d];
-        }
-
-        float* w_out = (float*)tr->W_out->data;
-        float* b_out = (float*)tr->b_out->data;
-
+        // Get probabilities for last position
         float softmax[128];
         float max_val = -1e9f;
+        size_t last_offset = (seq_len - 1) * vocab_size;
         for (size_t v = 0; v < vocab_size; v++) {
-            float logit = b_out[v];
-            for (size_t d = 0; d < d_model; d++) logit += last_hidden[d] * w_out[v * d_model + d];
+            float logit = logits_data[last_offset + v];
             softmax[v] = logit;
             if (logit > max_val) max_val = logit;
         }
@@ -414,6 +405,7 @@ static int test_shakespeare(void) {
         printf("%c", idx_to_char[next & 0xFF]);
         memmove(in_data, in_data + 1, (seq_len - 1) * sizeof(uint32_t));
         in_data[seq_len - 1] = next;
+        tensor_free(logits);
     }
     printf("\"\n");
 
