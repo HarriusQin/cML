@@ -264,14 +264,14 @@ static int test_shakespeare(void) {
     }
     printf("Vocab: %zu\n", vocab_size);
 
-    // Small transformer with self-attention (stable training)
+    // Medium transformer with self-attention
     TransformerConfig config = {
         .vocab_size = vocab_size,
-        .d_model = 48,
-        .n_heads = 2,
+        .d_model = 128,
+        .n_heads = 8,
         .n_encoder_layers = 0,
-        .n_decoder_layers = 2,
-        .d_ff = 96,
+        .n_decoder_layers = 4,
+        .d_ff = 256,
         .max_seq_len = 32,
         .dropout_p = 0.0f
     };
@@ -279,14 +279,14 @@ static int test_shakespeare(void) {
     Transformer* tr = transformer_create(config);
     if (!tr) { free(text); return 1; }
 
-    size_t seq_len = 16;
-    size_t train_steps = 2000;
-    float lr = 0.0001f;  // Smaller LR for stability
+    size_t seq_len = 24;
+    size_t train_steps = 5000;
+    float lr = 0.00003f;  // Smaller LR for stability
     float weight_decay = 0.0001f;
-    size_t batch_size = 8;
-    float max_grad = 1.0f;  // Gradient clipping
+    size_t batch_size = 16;
+    float max_grad = 0.3f;  // Tighter gradient clipping
 
-    printf("Training Transformer (d_model=%zu, layers=%zu, lr=%.5f)...\n", config.d_model, config.n_decoder_layers, lr);
+    printf("Training Transformer (d_model=%zu, layers=%zu, lr=%.6f)...\n", config.d_model, config.n_decoder_layers, lr);
 
     for (size_t step = 0; step < train_steps; step++) {
         size_t W_size = config.vocab_size * config.d_model;

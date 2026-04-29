@@ -51,10 +51,12 @@ typedef struct {
     Tensor* grad_W_q, *grad_W_k, *grad_W_v, *grad_W_o;
 
     // Cache for backward
-    Tensor* q_cache;    // [batch, seq_len, d_model]
-    Tensor* k_cache;    // [batch, seq_len, d_model]
-    Tensor* v_cache;    // [batch, seq_len, d_model]
-    Tensor* attn_weights; // [batch, n_heads, seq_len, seq_len]
+    Tensor* x_cache;       // [batch, seq_len, d_model] - input for W_q,k,v gradients
+    Tensor* out_cache;     // [batch, seq_len, d_model] - attention output before W_o
+    Tensor* q_cache;       // [batch, seq_len, d_model]
+    Tensor* k_cache;       // [batch, seq_len, d_model]
+    Tensor* v_cache;      // [batch, seq_len, d_model]
+    Tensor* attn_weights;  // [batch, n_heads, seq_len, seq_len]
     size_t seq_len;
     size_t n_heads;
     size_t d_k;
@@ -198,6 +200,8 @@ static MHAttention* mha_create(size_t d_model, size_t n_heads) {
     mha->q_cache = NULL;
     mha->k_cache = NULL;
     mha->v_cache = NULL;
+    mha->x_cache = NULL;
+    mha->out_cache = NULL;
     mha->attn_weights = NULL;
     mha->seq_len = 0;
     mha->n_heads = n_heads;
@@ -216,6 +220,8 @@ static void mha_free(MHAttention* mha) {
     tensor_free(mha->grad_W_k);
     tensor_free(mha->grad_W_v);
     tensor_free(mha->grad_W_o);
+    tensor_free(mha->x_cache);
+    tensor_free(mha->out_cache);
     tensor_free(mha->q_cache);
     tensor_free(mha->k_cache);
     tensor_free(mha->v_cache);
@@ -409,7 +415,8 @@ static Tensor* mha_forward(MHAttention* mha, const Tensor* x, bool causal) {
         }
     }
 
-    // Cache for backward
+    // Cache input and QKV for backward
+    mha->x_cache = tensor_clone(x);
     mha->q_cache = tensor_clone(Q);
     mha->k_cache = tensor_clone(K);
     mha->v_cache = tensor_clone(V);
@@ -549,6 +556,9 @@ static Tensor* mha_forward(MHAttention* mha, const Tensor* x, bool causal) {
         }
     }
 
+    // Cache output for backward
+    mha->out_cache = tensor_clone(output);
+
     // Final linear: output = output @ W_o.T
     float* w_o = (float*)mha->W_o->data;
     Tensor* final = tensor_create(TENSOR_DTYPE_F32, TENSOR_LAYOUT_NCHW, qkv_shape, 3);
@@ -582,7 +592,7 @@ static Tensor* mha_forward(MHAttention* mha, const Tensor* x, bool causal) {
 }
 
 /* ============================================================================
- * Backward: Multi-Head Attention
+ * Backward: Multi-Head Attention (proper implementation)
  * ============================================================================ */
 
 static void mha_backward(MHAttention* mha, const Tensor* grad_output, Tensor* grad_input) {
@@ -602,11 +612,11 @@ static void mha_backward(MHAttention* mha, const Tensor* grad_output, Tensor* gr
     float* grad_w_k = (float*)mha->grad_W_k->data;
     float* grad_w_v = (float*)mha->grad_W_v->data;
 
-    // Get cached values
+    // Get cached forward values
     float* q_cache = (float*)mha->q_cache->data;
     float* k_cache = (float*)mha->k_cache->data;
     float* v_cache = (float*)mha->v_cache->data;
-    float* attn_cache = (float*)mha->attn_weights->data;
+    float* attn_cache = (float*)mha->attn_weights->data;  // [batch, n_heads, seq_len, seq_len]
 
     // Clear gradients
     for (size_t i = 0; i < d_model * d_model; i++) {
@@ -616,7 +626,7 @@ static void mha_backward(MHAttention* mha, const Tensor* grad_output, Tensor* gr
         grad_w_o[i] = 0.0f;
     }
 
-    // grad_to_concat = grad_output @ W_o.T
+    // Step 1: grad_to_concat = grad_output @ W_o.T
     float* grad_to_concat = (float*)malloc(batch * seq_len * d_model * sizeof(float));
     for (size_t b = 0; b < batch; b++) {
         for (size_t s = 0; s < seq_len; s++) {
@@ -630,7 +640,7 @@ static void mha_backward(MHAttention* mha, const Tensor* grad_output, Tensor* gr
         }
     }
 
-    // Reshape to heads: [batch, n_heads, seq_len, d_k]
+    // Step 2: Reshape grad_to_concat to heads [batch, n_heads, seq_len, d_k]
     float* grad_heads = (float*)malloc(batch * n_heads * seq_len * d_k * sizeof(float));
     for (size_t b = 0; b < batch; b++) {
         for (size_t h = 0; h < n_heads; h++) {
@@ -644,97 +654,163 @@ static void mha_backward(MHAttention* mha, const Tensor* grad_output, Tensor* gr
         }
     }
 
-    // For attention: dL/dV = attn_weights.T @ dL/dA_concat
-    // dL/dA_concat (after softmax) = dL/dheads @ V_concat.T
-    // But this is complex. Simplified: accumulate gradient to V via attention weights
+    // Step 3: Compute dL/dV using attention weights
+    // For each head: dL/dV_h = A_h.T @ dL/dheads_h
+    // A: [batch, n_heads, seq_len, seq_len], grad_heads: [batch, n_heads, seq_len, d_k]
+    // Result: [batch, n_heads, d_k, seq_len] then transpose to [batch, n_heads, seq_len, d_k]
+    float* grad_v_reshaped = (float*)malloc(batch * n_heads * seq_len * d_k * sizeof(float));
+    for (size_t b = 0; b < batch; b++) {
+        for (size_t h = 0; h < n_heads; h++) {
+            for (size_t k = 0; k < d_k; k++) {
+                for (size_t s = 0; s < seq_len; s++) {
+                    float sum = 0.0f;
+                    size_t v_idx = b * n_heads * seq_len * d_k + h * seq_len * d_k + s * d_k + k;
+                    for (size_t j = 0; j < seq_len; j++) {
+                        size_t attn_idx = b * n_heads * seq_len * seq_len + h * seq_len * seq_len + s * seq_len + j;
+                        size_t head_idx = b * n_heads * seq_len * d_k + h * seq_len * d_k + j * d_k + k;
+                        sum += attn_cache[attn_idx] * grad_heads[head_idx];
+                    }
+                    grad_v_reshaped[v_idx] = sum;
+                }
+            }
+        }
+    }
 
-    // Simplified approach: compute grad to V using attention
-    // Reshape K and V for batch matmul: need K transpose [batch, n_heads, d_k, seq_len]
-    float* k_reshaped = (float*)malloc(batch * n_heads * seq_len * d_k * sizeof(float));
-    float* v_reshaped = (float*)malloc(batch * n_heads * seq_len * d_k * sizeof(float));
+    // Step 4: Softmax backward
+    // dL/dS_ij = A_ij * (dL/dA_ij - sum_k(A_ik * dL/dA_ik))
+    // First compute dL/dA = dL/dheads @ V.T
+    float* grad_attn = (float*)malloc(batch * n_heads * seq_len * seq_len * sizeof(float));
+    for (size_t b = 0; b < batch; b++) {
+        for (size_t h = 0; h < n_heads; h++) {
+            for (size_t i = 0; i < seq_len; i++) {
+                for (size_t j = 0; j < seq_len; j++) {
+                    float sum = 0.0f;
+                    for (size_t k = 0; k < d_k; k++) {
+                        size_t head_idx = b * n_heads * seq_len * d_k + h * seq_len * d_k + i * d_k + k;
+                        size_t v_idx = b * n_heads * seq_len * d_k + h * seq_len * d_k + j * d_k + k;
+                        sum += grad_heads[head_idx] * v_cache[v_idx];
+                    }
+                    grad_attn[b * n_heads * seq_len * seq_len + h * seq_len * seq_len + i * seq_len + j] = sum;
+                }
+            }
+        }
+    }
+
+    // Compute dL/dS using proper softmax backward
+    float* grad_scores = (float*)malloc(batch * n_heads * seq_len * seq_len * sizeof(float));
+    for (size_t b = 0; b < batch; b++) {
+        for (size_t h = 0; h < n_heads; h++) {
+            for (size_t i = 0; i < seq_len; i++) {
+                // Compute sum_k(A_ik * dL/dA_ik) for this row
+                float row_sum = 0.0f;
+                for (size_t k = 0; k < seq_len; k++) {
+                    size_t attn_idx = b * n_heads * seq_len * seq_len + h * seq_len * seq_len + i * seq_len + k;
+                    row_sum += attn_cache[attn_idx] * grad_attn[attn_idx];
+                }
+                // dL/dS_ij = A_ij * (dL/dA_ij - row_sum)
+                for (size_t j = 0; j < seq_len; j++) {
+                    size_t attn_idx = b * n_heads * seq_len * seq_len + h * seq_len * seq_len + i * seq_len + j;
+                    grad_scores[attn_idx] = attn_cache[attn_idx] * (grad_attn[attn_idx] - row_sum);
+                }
+            }
+        }
+    }
+    free(grad_attn);
+
+    // Step 5: Compute dL/dQ and dL/dK
+    // dL/dQ_ik = sum_j dL/dS_ij * K_jk
+    // dL/dK_ik = sum_j dL/dS_ij * Q_ik
+    float* grad_q_heads = (float*)malloc(batch * n_heads * seq_len * d_k * sizeof(float));
+    float* grad_k_heads = (float*)malloc(batch * n_heads * seq_len * d_k * sizeof(float));
+    float scale = 1.0f / sqrtf_local((float)d_k);
+
+    for (size_t b = 0; b < batch; b++) {
+        for (size_t h = 0; h < n_heads; h++) {
+            for (size_t i = 0; i < seq_len; i++) {
+                for (size_t k = 0; k < d_k; k++) {
+                    float grad_q_sum = 0.0f;
+                    float grad_k_sum = 0.0f;
+                    for (size_t j = 0; j < seq_len; j++) {
+                        size_t s_idx = b * n_heads * seq_len * seq_len + h * seq_len * seq_len + i * seq_len + j;
+                        size_t k_base = b * n_heads * seq_len * d_k + h * seq_len * d_k + j * d_k + k;
+                        grad_q_sum += grad_scores[s_idx] * k_cache[k_base];
+                        grad_k_sum += grad_scores[s_idx] * q_cache[b * n_heads * seq_len * d_k + h * seq_len * d_k + i * d_k + k];
+                    }
+                    grad_q_heads[b * n_heads * seq_len * d_k + h * seq_len * d_k + i * d_k + k] = grad_q_sum * scale;
+                    grad_k_heads[b * n_heads * seq_len * d_k + h * seq_len * d_k + i * d_k + k] = grad_k_sum * scale;
+                }
+            }
+        }
+    }
+
+    // Step 6: Accumulate gradients to W_q, W_k, W_v, W_o
+    // grad to W_o: grad_to_concat.T @ out_cache
+    // grad_w_o[i * d_model + j] = sum_{b,s} grad_to_concat[b,s,i] * out_cache[b,s,j]
+    float* out_cache = (float*)mha->out_cache->data;
+    for (size_t b = 0; b < batch; b++) {
+        for (size_t s = 0; s < seq_len; s++) {
+            for (size_t i = 0; i < d_model; i++) {
+                for (size_t j = 0; j < d_model; j++) {
+                    size_t concat_idx = b * seq_len * d_model + s * d_model + i;
+                    size_t out_idx = b * seq_len * d_model + s * d_model + j;
+                    grad_w_o[i * d_model + j] += grad_to_concat[concat_idx] * out_cache[out_idx] / (batch * seq_len);
+                }
+            }
+        }
+    }
+
+    // grad to W_q, W_k, W_v: x_cache.T @ grad_Q/K/V (after reshape to concat)
+    float* x_data = (float*)mha->x_cache->data;
+    float* grad_q_concat = (float*)malloc(batch * seq_len * d_model * sizeof(float));
+    float* grad_k_concat = (float*)malloc(batch * seq_len * d_model * sizeof(float));
+    float* grad_v_concat = (float*)malloc(batch * seq_len * d_model * sizeof(float));
+
+    // Reshape grad_q_heads back to concat [batch, seq_len, d_model]
     for (size_t b = 0; b < batch; b++) {
         for (size_t h = 0; h < n_heads; h++) {
             for (size_t s = 0; s < seq_len; s++) {
                 for (size_t k = 0; k < d_k; k++) {
                     size_t src_idx = b * n_heads * seq_len * d_k + h * seq_len * d_k + s * d_k + k;
-                    k_reshaped[src_idx] = k_cache[src_idx];
-                    v_reshaped[src_idx] = v_cache[src_idx];
+                    size_t dst_idx = b * seq_len * d_model + s * d_model + h * d_k + k;
+                    grad_q_concat[dst_idx] = grad_q_heads[src_idx];
+                    grad_k_concat[dst_idx] = grad_k_heads[src_idx];
+                    grad_v_concat[dst_idx] = grad_v_reshaped[src_idx];
                 }
             }
         }
     }
 
-    // grad_attn = grad_heads @ V / sqrt(d_k)
-    // This is complex. Instead, approximate by:
-    // 1. grad to scores = grad_heads @ V
-    // 2. grad to V = attn.T @ grad_heads
-
-    // Simplified gradient to Q, K, V using chain rule approximation
-    float scale = 1.0f / sqrtf((float)d_k);
-
-    // For each head, compute gradients
-    for (size_t b = 0; b < batch; b++) {
-        for (size_t h = 0; h < n_heads; h++) {
-            for (size_t i = 0; i < seq_len; i++) {
-                for (size_t k = 0; k < d_k; k++) {
-                    size_t head_idx = b * n_heads * seq_len * d_k + h * seq_len * d_k + i * d_k + k;
-                    float grad_h = grad_heads[head_idx];
-
-                    // Simplified: accumulate gradients directly
-                    // grad to W_o: grad_to_concat * concat_input
-                    for (size_t j = 0; j < d_model; j++) {
-                        size_t concat_idx = b * seq_len * d_model + i * d_model + h * d_k + k;
-                        grad_w_o[h * d_k + k + j * d_model] += grad_to_concat[concat_idx] * q_cache[concat_idx];
-                    }
+    // grad_W_q = grad_Q.T @ x, grad_W_k = grad_K.T @ x, grad_W_v = grad_V.T @ x
+    for (size_t i = 0; i < d_model; i++) {
+        for (size_t j = 0; j < d_model; j++) {
+            float gq = 0.0f, gk = 0.0f, gv = 0.0f;
+            for (size_t b = 0; b < batch; b++) {
+                for (size_t s = 0; s < seq_len; s++) {
+                    gq += grad_q_concat[b * seq_len * d_model + s * d_model + i] * x_data[b * seq_len * d_model + s * d_model + j];
+                    gk += grad_k_concat[b * seq_len * d_model + s * d_model + i] * x_data[b * seq_len * d_model + s * d_model + j];
+                    gv += grad_v_concat[b * seq_len * d_model + s * d_model + i] * x_data[b * seq_len * d_model + s * d_model + j];
                 }
             }
+            grad_w_q[i * d_model + j] = gq / (batch * seq_len);
+            grad_w_k[i * d_model + j] = gk / (batch * seq_len);
+            grad_w_v[i * d_model + j] = gv / (batch * seq_len);
         }
     }
 
-    // Simplified Q, K, V gradient accumulation
-    // grad to Q = sum over attended values
-    for (size_t b = 0; b < batch; b++) {
-        for (size_t h = 0; h < n_heads; h++) {
-            for (size_t s = 0; s < seq_len; s++) {
-                for (size_t i = 0; i < d_model; i++) {
-                    float sum = 0.0f;
-                    for (size_t k = 0; k < d_k; k++) {
-                        size_t q_idx = b * seq_len * d_model + s * d_model + h * d_k + k;
-                        size_t head_idx = b * n_heads * seq_len * d_k + h * seq_len * d_k + s * d_k + k;
-                        sum += grad_heads[head_idx] * v_reshaped[head_idx];
-                    }
-                    // This is a simplification - proper attention backward needs scores
-                }
-            }
-        }
-    }
-
-    // Most simplified: just pass gradient through and approximate W_q, W_k, W_v gradients
-    // Copy grad_to_concat to grad_input (simplified, ignores attention structure)
+    // Pass gradient to input
     for (size_t i = 0; i < batch * seq_len * d_model; i++) {
         gi_data[i] = grad_to_concat[i];
     }
 
-    // Approximate gradient to Q projection
-    for (size_t b = 0; b < batch; b++) {
-        for (size_t h = 0; h < n_heads; h++) {
-            for (size_t s = 0; s < seq_len; s++) {
-                for (size_t i = 0; i < d_model; i++) {
-                    float d = gi_data[b * seq_len * d_model + s * d_model + i];
-                    for (size_t j = 0; j < d_model; j++) {
-                        grad_w_q[i * d_model + j] += d * q_cache[b * seq_len * d_model + s * d_model + j] / (seq_len * batch);
-                        grad_w_k[i * d_model + j] += d * k_cache[b * seq_len * d_model + s * d_model + j] / (seq_len * batch);
-                        grad_w_v[i * d_model + j] += d * v_cache[b * seq_len * d_model + s * d_model + j] / (seq_len * batch);
-                    }
-                }
-            }
-        }
-    }
-
     free(grad_to_concat);
     free(grad_heads);
-    free(k_reshaped);
-    free(v_reshaped);
+    free(grad_v_reshaped);
+    free(grad_scores);
+    free(grad_q_heads);
+    free(grad_k_heads);
+    free(grad_q_concat);
+    free(grad_k_concat);
+    free(grad_v_concat);
 }
 
 
