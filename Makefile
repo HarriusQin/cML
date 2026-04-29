@@ -1,7 +1,8 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c99 -lm -I.
+LDFLAGS = -lm -lOpenCL
 BINDIR = bin
-TARGETS = $(BINDIR)/test_csv $(BINDIR)/test_dataset $(BINDIR)/test_iris $(BINDIR)/test_binary $(BINDIR)/test_gnb $(BINDIR)/test_dt $(BINDIR)/test_rf_n_ada $(BINDIR)/test_ml $(BINDIR)/test_softmax_benchmark $(BINDIR)/test_idx $(BINDIR)/test_tensor $(BINDIR)/test_mlp $(BINDIR)/test_lenet5 $(BINDIR)/test_rnn $(BINDIR)/test_lstm $(BINDIR)/test_transformer $(BINDIR)/test_dl_realdata_v2 $(BINDIR)/main
+TARGETS = $(BINDIR)/test_csv $(BINDIR)/test_dataset $(BINDIR)/test_iris $(BINDIR)/test_binary $(BINDIR)/test_gnb $(BINDIR)/test_dt $(BINDIR)/test_rf_n_ada $(BINDIR)/test_ml $(BINDIR)/test_softmax_benchmark $(BINDIR)/test_idx $(BINDIR)/test_tensor $(BINDIR)/test_mlp $(BINDIR)/test_lenet5 $(BINDIR)/test_rnn $(BINDIR)/test_lstm $(BINDIR)/test_opencl_tensor $(BINDIR)/test_tensor_benchmark $(BINDIR)/main
 
 .PHONY: all test test_dl clean
 
@@ -59,13 +60,13 @@ $(BINDIR)/test_rnn: test_rnn.c rnn.h tensor.h | $(BINDIR)
 $(BINDIR)/test_lstm: test_lstm.c lstm.h tensor.h | $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ test_lstm.c -lm
 
-$(BINDIR)/test_transformer: test_transformer.c transformer.h tensor.h | $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ test_transformer.c -lm
+$(BINDIR)/test_opencl_tensor: test/test_opencl_tensor.c opencl_tensor.h | $(BINDIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_opencl_tensor.c
 
-$(BINDIR)/test_dl_realdata_v2: test_dl_realdata_v2.c tensor.h idx.h rnn.h lstm.h transformer.h | $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ test_dl_realdata_v2.c -lm
+$(BINDIR)/test_tensor_benchmark: test/test_tensor_benchmark.c tensor.h opencl_tensor.h | $(BINDIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_tensor_benchmark.c
 
-test_dl: $(BINDIR)/test_lenet5 $(BINDIR)/test_rnn $(BINDIR)/test_lstm $(BINDIR)/test_transformer
+test_dl: $(BINDIR)/test_lenet5 $(BINDIR)/test_rnn $(BINDIR)/test_lstm
 	@echo "=== Running LeNet-5 Tests ==="
 	./$(BINDIR)/test_lenet5
 	@echo ""
@@ -74,9 +75,6 @@ test_dl: $(BINDIR)/test_lenet5 $(BINDIR)/test_rnn $(BINDIR)/test_lstm $(BINDIR)/
 	@echo ""
 	@echo "=== Running LSTM Tests ==="
 	./$(BINDIR)/test_lstm
-	@echo ""
-	@echo "=== Running Transformer Tests ==="
-	./$(BINDIR)/test_transformer
 
 test: $(BINDIR)/test_csv $(BINDIR)/test_dataset $(BINDIR)/test_iris $(BINDIR)/test_binary $(BINDIR)/test_gnb $(BINDIR)/test_dt
 	@echo "=== Running CSV Parser Tests ==="
@@ -99,7 +97,7 @@ test: $(BINDIR)/test_csv $(BINDIR)/test_dataset $(BINDIR)/test_iris $(BINDIR)/te
 
 clean:
 	rm -rf $(BINDIR)
-	rm -f test_softmax_benchmark_asan test_dl_realdata test_lenet5_bin test_mlp_asan test_mlp_iris
-	rm -f test/test_mlp_framework test/test_mlp_iris test/test_transformer
+	rm -f test_softmax_benchmark_asan test_lenet5_bin test_mlp_asan test_mlp_iris
+	rm -f test/test_mlp_framework test/test_mlp_iris
 	rm -f tests/test_tensor_edge_cases tests/test_tensor_edge_cases_asan
 	rm -rf *.dSYM tests/*.dSYM
