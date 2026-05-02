@@ -44,5 +44,5 @@ model.methods.fit(&model.config, &model.state, ds, ...);
 
 ## 文档语言
 
-- [English](en/)
-- [中文](zh/)
+- [English](../docs/index.md)
+- [中文](index.md)
