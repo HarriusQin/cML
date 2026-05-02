@@ -63,6 +63,12 @@ $(BINDIR)/test_lstm: test_lstm.c lstm.h tensor.h | $(BINDIR)
 $(BINDIR)/test_opencl_tensor: test/test_opencl_tensor.c opencl_tensor.h | $(BINDIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_opencl_tensor.c
 
+$(BINDIR)/test_opencl_mlp: test/test_opencl_mlp.c opencl_mlp.h opencl_tensor.h | $(BINDIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_opencl_mlp.c
+
+$(BINDIR)/test_opencl_mlp_mnist: test/test_opencl_mlp_mnist.c opencl_mlp.h opencl_tensor.h idx.h | $(BINDIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_opencl_mlp_mnist.c
+
 $(BINDIR)/test_tensor_benchmark: test/test_tensor_benchmark.c tensor.h opencl_tensor.h | $(BINDIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_tensor_benchmark.c
 
