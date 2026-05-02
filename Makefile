@@ -1,8 +1,32 @@
+# Detect macOS ARM
+ifeq ($(shell uname -s),Darwin)
+  ifeq ($(shell uname -m),arm64)
+    IS_MACOS_ARM64 = 1
+  endif
+endif
+
+# Compiler settings
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c99 -D_GNU_SOURCE -lm -I.
-LDFLAGS = -lm -lOpenCL
+CFLAGS = -Wall -Wextra -std=c99 -D_GNU_SOURCE -I.
+LDFLAGS = -lm
+ifeq ($(IS_MACOS_ARM64),1)
+  CC = clang
+  SDK_PATH = /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+  CFLAGS += -isysroot $(SDK_PATH)
+  LDFLAGS += -framework OpenCL
+else
+  LDFLAGS += -lOpenCL
+endif
+
 BINDIR = bin
-TARGETS = $(BINDIR)/test_csv $(BINDIR)/test_dataset $(BINDIR)/test_iris $(BINDIR)/test_binary $(BINDIR)/test_gnb $(BINDIR)/test_dt $(BINDIR)/test_rf_n_ada $(BINDIR)/test_ml $(BINDIR)/test_softmax_benchmark $(BINDIR)/test_idx $(BINDIR)/test_tensor $(BINDIR)/test_mlp $(BINDIR)/test_lenet5 $(BINDIR)/test_rnn $(BINDIR)/test_lstm $(BINDIR)/test_opencl_tensor $(BINDIR)/test_tensor_benchmark $(BINDIR)/main
+
+# Non-OpenCL targets (always build)
+BASE_TARGETS = $(BINDIR)/test_csv $(BINDIR)/test_dataset $(BINDIR)/test_iris $(BINDIR)/test_binary $(BINDIR)/test_gnb $(BINDIR)/test_dt $(BINDIR)/test_rf_n_ada $(BINDIR)/test_ml $(BINDIR)/test_softmax_benchmark $(BINDIR)/test_idx $(BINDIR)/test_tensor $(BINDIR)/test_mlp $(BINDIR)/test_lenet5 $(BINDIR)/test_rnn $(BINDIR)/test_lstm $(BINDIR)/main
+
+# OpenCL targets
+OPENCL_TARGETS = $(BINDIR)/test_opencl_tensor $(BINDIR)/test_tensor_benchmark
+
+TARGETS = $(BASE_TARGETS) $(OPENCL_TARGETS)
 
 .PHONY: all test test_dl clean
 
