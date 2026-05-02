@@ -3,8 +3,8 @@
 #include <string.h>
 #include <sys/time.h>
 #include <math.h>
-#include "tensor.h"
-#include "opencl_tensor.h"
+#include "dl/tensor.h"
+#include "dl/opencl_tensor.h"
 
 #define EPS 1e-5f
 

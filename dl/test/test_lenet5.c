@@ -3,7 +3,7 @@
  * @brief Test LeNet-5 model
  */
 
-#include "lenet5.h"
+#include "dl/lenet5.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>

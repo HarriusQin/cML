@@ -126,105 +126,84 @@ static void cl_fc_layer_free(CLFCLayer* layer) {
 /* --------------------------------------------------------------------------
  * Forward: y = x @ W.T + b (GPU)
  * -------------------------------------------------------------------------- */
-static CLTensor* cl_fc_layer_forward(CLOpenCL* cl, CLFCLayer* layer, const CLTensor* x) {
+static CLTensor* cl_fc_layer_forward(CLOpenCL* cl, cl_kernel_cache_t* cache,
+                                     CLFCLayer* layer, const CLTensor* x) {
     size_t batch = x->shape[0];
     size_t out_features = layer->weight->shape[0];
     size_t in_features = layer->weight->shape[1];
 
-    // Save input for backward
-    float* h_x_save = (float*)malloc(x->nbytes);
-    cl_tensor_download(x, h_x_save);
-    layer->input_cache = cl_tensor_create_from_host(cl, CL_TENSOR_DTYPE_F32,
-                                                     x->layout, x->shape, x->ndim, h_x_save);
-    free(h_x_save);
+    // Save input cache for backward (GPU copy)
+    layer->input_cache = cl_tensor_create(cl, x->dtype, x->layout, x->shape, x->ndim);
+    cl_tensor_copy_impl(cl, cache, layer->input_cache, x);
 
-    // Create output tensor
-    size_t out_shape[] = {batch, out_features};
-    CLTensor* preact = cl_tensor_create(cl, CL_TENSOR_DTYPE_F32, x->layout, out_shape, 2);
-
-    // Download x and weight to host for GEMM
-    float* h_x = (float*)malloc(x->nbytes);
+    // Compute preact = x @ W.T via GPU GEMM
+    // weight shape [out_features, in_features], needs W.T -> [in_features, out_features]
+    // But our gemm kernel expects A[M,K] @ B[K,N] = C[M,N]
+    // x is [batch, in_features] = [M, K], weight is [out, in] = [K, N]... wait
+    // Let's construct: x @ W^T where W^T = cl_tensor_transpose(weight)
+    // Actually simpler: create weight_T as transpose [in, out], then matmul
+    CLTensor* weight_T = cl_tensor_create(cl, layer->weight->dtype, layer->weight->layout,
+                                          (size_t[]){in_features, out_features}, 2);
+    // TODO: GPU transpose kernel; for now download-transpose-upload
     float* h_w = (float*)malloc(layer->weight->nbytes);
-    float* h_preact = (float*)malloc(preact->nbytes);
-    cl_tensor_download(x, h_x);
     cl_tensor_download(layer->weight, h_w);
-
-    // Compute y = x @ W.T = y[b,o] = sum_i x[b,i] * W[o,i]
-    for (size_t b = 0; b < batch; b++) {
-        for (size_t o = 0; o < out_features; o++) {
-            float sum = 0.0f;
-            for (size_t i = 0; i < in_features; i++) {
-                sum += h_x[b * in_features + i] * h_w[o * in_features + i];
-            }
-            h_preact[b * out_features + o] = sum;
+    float* h_wt = (float*)malloc(layer->weight->nbytes);
+    for (size_t o = 0; o < out_features; o++) {
+        for (size_t i = 0; i < in_features; i++) {
+            h_wt[i * out_features + o] = h_w[o * in_features + i];
         }
     }
+    cl_tensor_upload(weight_T, h_wt);
+    free(h_w); free(h_wt);
 
-    // Add bias
-    float* h_bias = (float*)malloc(layer->bias->nbytes);
-    cl_tensor_download(layer->bias, h_bias);
-    for (size_t b = 0; b < batch; b++) {
-        for (size_t o = 0; o < out_features; o++) {
-            h_preact[b * out_features + o] += h_bias[o];
-        }
-    }
-    free(h_bias);
+    CLTensor* preact = cl_tensor_matmul_impl(cl, cache, x, weight_T);
+    cl_tensor_free(weight_T);
 
-    // Upload result
-    cl_tensor_upload(preact, h_preact);
-    free(h_x);
-    free(h_w);
-    free(h_preact);
+    // Add bias via GPU
+    size_t out_shape[] = {batch, out_features};
+    CLTensor* output = cl_tensor_create(cl, CL_TENSOR_DTYPE_F32, x->layout, out_shape, 2);
+    // bias_add modifies inout; copy preact to output first
+    cl_tensor_copy_impl(cl, cache, output, preact);
+    cl_tensor_bias_add_impl(cl, cache, output, layer->bias);
+    cl_tensor_free(preact);
 
-    return preact;
+    return output;
 }
 
 /* --------------------------------------------------------------------------
  * ReLU forward: y = max(0, x), saves mask
  * -------------------------------------------------------------------------- */
-static CLTensor* cl_relu_forward(CLOpenCL* cl, CLTensor* x, CLTensor** mask_out) {
-    CLTensor* mask = cl_tensor_create(cl, CL_TENSOR_DTYPE_F32, x->layout, x->shape, x->ndim);
-    *mask_out = mask;
+static CLTensor* cl_relu_forward(CLOpenCL* cl, cl_kernel_cache_t* cache,
+                                  CLTensor* x, CLTensor** mask_out) {
+    (void)cache;
+    float* data = (float*)malloc(x->nbytes);
+    cl_tensor_download(x, data);
 
-    float* h_x = (float*)malloc(x->nbytes);
-    float* h_mask = (float*)malloc(x->nbytes);
-    cl_tensor_download(x, h_x);
-
+    float* mask_data = (float*)malloc(x->nbytes);
     for (size_t i = 0; i < x->size; i++) {
-        h_mask[i] = (h_x[i] > 0) ? 1.0f : 0.0f;
-        if (h_x[i] < 0) h_x[i] = 0;
+        mask_data[i] = (data[i] > 0) ? 1.0f : 0.0f;
+        if (data[i] < 0) data[i] = 0;
     }
+    cl_tensor_upload(x, data);
 
-    cl_tensor_upload(mask, h_mask);
-    cl_tensor_upload(x, h_x);
-    free(h_x);
-    free(h_mask);
+    CLTensor* mask_result = cl_tensor_create(cl, x->dtype, x->layout, x->shape, x->ndim);
+    cl_tensor_upload(mask_result, mask_data);
 
+    free(data);
+    free(mask_data);
+    *mask_out = mask_result;
     return x;
 }
 
 /* --------------------------------------------------------------------------
  * ReLU backward
  * -------------------------------------------------------------------------- */
-static CLTensor* cl_relu_backward(CLOpenCL* cl, const CLTensor* grad_output, const CLTensor* mask) {
+static CLTensor* cl_relu_backward(CLOpenCL* cl, cl_kernel_cache_t* cache,
+                                    const CLTensor* grad_output, const CLTensor* mask) {
     CLTensor* grad = cl_tensor_create(cl, CL_TENSOR_DTYPE_F32,
                                        grad_output->layout, grad_output->shape, grad_output->ndim);
-
-    float* h_grad_out = (float*)malloc(grad_output->nbytes);
-    float* h_mask = (float*)malloc(mask->nbytes);
-    float* h_grad = (float*)malloc(grad->nbytes);
-    cl_tensor_download(grad_output, h_grad_out);
-    cl_tensor_download(mask, h_mask);
-
-    for (size_t i = 0; i < grad_output->size; i++) {
-        h_grad[i] = h_grad_out[i] * h_mask[i];
-    }
-
-    cl_tensor_upload(grad, h_grad);
-    free(h_grad_out);
-    free(h_mask);
-    free(h_grad);
-
+    // GPU element-wise multiply
+    cl_tensor_elem_mul_impl(cl, cache, grad_output, mask, grad);
     return grad;
 }
 
@@ -269,7 +248,8 @@ static void cl_mlp_free(CLOpenCLMLP* mlp) {
 /* --------------------------------------------------------------------------
  * Forward Pass (GPU)
  * -------------------------------------------------------------------------- */
-static CLTensor* cl_mlp_forward(CLOpenCL* cl, CLOpenCLMLP* mlp, const CLTensor* input) {
+static CLTensor* cl_mlp_forward(CLOpenCL* cl, cl_kernel_cache_t* cache,
+                                 CLOpenCLMLP* mlp, const CLTensor* input) {
     // Clone input to GPU
     float* h_input = (float*)malloc(input->nbytes);
     cl_tensor_download(input, h_input);
@@ -280,20 +260,16 @@ static CLTensor* cl_mlp_forward(CLOpenCL* cl, CLOpenCLMLP* mlp, const CLTensor* 
     for (size_t i = 0; i < mlp->num_layers; i++) {
         CLFCLayer* layer = mlp->layers[i];
 
-        CLTensor* preact = cl_fc_layer_forward(cl, layer, x);
-        // Don't store preact in layer_preacts since it will be freed
-        // mlp->layer_preacts[i] = preact;
+        CLTensor* preact = cl_fc_layer_forward(cl, cache, layer, x);
         cl_tensor_free(x);
         x = preact;
 
         if (i < mlp->num_layers - 1) {
-            x = cl_relu_forward(cl, x, &layer->relu_mask);
+            x = cl_relu_forward(cl, cache, x, &layer->relu_mask);
         }
-        // Don't store x in layer_outputs since it will be freed
-        // mlp->layer_outputs[i] = x;
     }
 
-    CLTensor* output = cl_softmax_forward(cl, x, 1);
+    CLTensor* output = cl_tensor_softmax_impl(cl, cache, x);
     cl_tensor_free(x);
 
     return output;
@@ -302,46 +278,27 @@ static CLTensor* cl_mlp_forward(CLOpenCL* cl, CLOpenCLMLP* mlp, const CLTensor* 
 /* --------------------------------------------------------------------------
  * Cross-Entropy Gradient
  * -------------------------------------------------------------------------- */
-static CLTensor* cl_cross_entropy_grad(CLOpenCL* cl, const CLTensor* pred, const CLTensor* targets) {
-    size_t batch = pred->shape[0];
-    size_t num_classes = pred->shape[1];
-
-    float* h_pred = (float*)malloc(pred->nbytes);
-    float* h_target = (float*)malloc(targets->nbytes);
-    cl_tensor_download(pred, h_pred);
-    cl_tensor_download(targets, h_target);
-
-    float* h_grad = (float*)malloc(batch * num_classes * sizeof(float));
-    for (size_t b = 0; b < batch; b++) {
-        size_t target_class = (size_t)h_target[b];
-        for (size_t c = 0; c < num_classes; c++) {
-            h_grad[b * num_classes + c] = h_pred[b * num_classes + c];
-            if (c == target_class) {
-                h_grad[b * num_classes + c] -= 1.0f;
-            }
-        }
-    }
-
-    size_t grad_shape[] = {batch, num_classes};
-    CLTensor* grad = cl_tensor_create_from_host(cl, CL_TENSOR_DTYPE_F32,
-                                                  pred->layout, grad_shape, 2, h_grad);
-    free(h_pred);
-    free(h_target);
-    free(h_grad);
+static CLTensor* cl_cross_entropy_grad(CLOpenCL* cl, cl_kernel_cache_t* cache,
+                                         const CLTensor* pred, const int* targets,
+                                         size_t batch, size_t num_classes) {
+    CLTensor* grad = cl_tensor_create(cl, CL_TENSOR_DTYPE_F32,
+                                        pred->layout, pred->shape, pred->ndim);
+    cl_tensor_cross_entropy_grad_impl(cl, cache, grad, pred, targets, batch, num_classes);
     return grad;
 }
 
 /* --------------------------------------------------------------------------
- * Backward Pass
+ * Backward Pass (GPU)
  * -------------------------------------------------------------------------- */
-static void cl_mlp_backward(CLOpenCL* cl, CLOpenCLMLP* mlp, const CLTensor* grad_output) {
+static void cl_mlp_backward(CLOpenCL* cl, cl_kernel_cache_t* cache,
+                             CLOpenCLMLP* mlp, const CLTensor* grad_output) {
     CLTensor* grad = cl_tensor_clone(cl, grad_output);
 
     for (int i = (int)mlp->num_layers - 1; i >= 0; i--) {
         CLFCLayer* layer = mlp->layers[i];
 
         if (i < (int)mlp->num_layers - 1 && layer->relu_mask) {
-            CLTensor* new_grad = cl_relu_backward(cl, grad, layer->relu_mask);
+            CLTensor* new_grad = cl_relu_backward(cl, cache, grad, layer->relu_mask);
             cl_tensor_free(grad);
             grad = new_grad;
         }
@@ -350,61 +307,75 @@ static void cl_mlp_backward(CLOpenCL* cl, CLOpenCLMLP* mlp, const CLTensor* grad
         size_t out_features = layer->weight->shape[0];
         size_t in_features = layer->weight->shape[1];
 
-        float* h_grad = (float*)malloc(grad->nbytes);
-        float* h_input = (float*)malloc(layer->input_cache->nbytes);
+        // Download weight to host for transpose
         float* h_weight = (float*)malloc(layer->weight->nbytes);
-        cl_tensor_download(grad, h_grad);
-        cl_tensor_download(layer->input_cache, h_input);
         cl_tensor_download(layer->weight, h_weight);
 
-        // grad_w = (grad).T @ input
-        float* h_grad_w = (float*)calloc(out_features * in_features, sizeof(float));
-        float* h_grad_b = (float*)calloc(out_features, sizeof(float));
-
+        // Transpose weight to [in, out] for grad @ W
+        float* h_weight_T = (float*)malloc(layer->weight->nbytes);
         for (size_t o = 0; o < out_features; o++) {
-            for (size_t b = 0; b < batch; b++) {
-                h_grad_b[o] += h_grad[b * out_features + o];
-                for (size_t inn = 0; inn < in_features; inn++) {
-                    h_grad_w[o * in_features + inn] += h_grad[b * out_features + o] * h_input[b * in_features + inn];
-                }
-            }
-        }
-
-        // Scale by batch
-        float inv_batch = 1.0f / batch;
-        for (size_t j = 0; j < out_features * in_features; j++) {
-            h_grad_w[j] *= inv_batch;
-        }
-        for (size_t j = 0; j < out_features; j++) {
-            h_grad_b[j] *= inv_batch;
-        }
-
-        cl_tensor_upload(layer->grad_w, h_grad_w);
-        cl_tensor_upload(layer->grad_b, h_grad_b);
-
-        // Compute gradient for previous layer: grad @ W
-        float* h_grad_input = (float*)malloc(batch * in_features * sizeof(float));
-        for (size_t b = 0; b < batch; b++) {
             for (size_t inn = 0; inn < in_features; inn++) {
-                float sum = 0.0f;
-                for (size_t o = 0; o < out_features; o++) {
-                    sum += h_grad[b * out_features + o] * h_weight[o * in_features + inn];
-                }
-                h_grad_input[b * in_features + inn] = sum;
+                h_weight_T[inn * out_features + o] = h_weight[o * in_features + inn];
             }
         }
+        cl_tensor_upload(layer->grad_w, h_weight_T);  // reuse grad_w buffer for transpose
+        free(h_weight); free(h_weight_T);
 
-        free(h_grad);
-        free(h_input);
-        free(h_weight);
-        free(h_grad_w);
-        free(h_grad_b);
+        CLTensor* weight_T_gpu = cl_tensor_create(cl, layer->weight->dtype, layer->weight->layout,
+                                                  (size_t[]){in_features, out_features}, 2);
+        float* h_wt2 = (float*)malloc(layer->weight->nbytes);
+        cl_tensor_download(layer->grad_w, h_wt2);  // get transposed
+        cl_tensor_upload(weight_T_gpu, h_wt2);
+        free(h_wt2);
 
+        // grad_input = grad @ W^T (weight stored [out, in])
+        // Need W as [in, out], so we have weight_T_gpu [in, out]
+        CLTensor* grad_input = cl_tensor_matmul_impl(cl, cache, grad, weight_T_gpu);
+        cl_tensor_free(weight_T_gpu);
+
+        // grad_w = (grad).T @ input_cache => shape [out, in]
+        // grad is [batch, out], input_cache is [batch, in]
+        // grad.T is [out, batch], input_cache is [batch, in]
+        // (grad).T @ input = [out, batch] @ [batch, in] = [out, in]
+        CLTensor* grad_T = cl_tensor_create(cl, grad->dtype, grad->layout,
+                                            (size_t[]){out_features, batch}, 2);
+        float* h_g = (float*)malloc(grad->nbytes);
+        cl_tensor_download(grad, h_g);
+        float* h_gt = (float*)malloc(out_features * batch * sizeof(float));
+        for (size_t b = 0; b < batch; b++) {
+            for (size_t o = 0; o < out_features; o++) {
+                h_gt[o * batch + b] = h_g[b * out_features + o];
+            }
+        }
+        cl_tensor_upload(grad_T, h_gt);
+        free(h_g); free(h_gt);
+
+        CLTensor* grad_w_gpu = cl_tensor_matmul_impl(cl, cache, grad_T, layer->input_cache);
+        cl_tensor_free(grad_T);
+
+        // Copy grad_w to layer->grad_w (no batch scaling for vanilla SGD)
+        float* h_gw = (float*)malloc(grad_w_gpu->nbytes);
+        cl_tensor_download(grad_w_gpu, h_gw);
+        cl_tensor_upload(layer->grad_w, h_gw);
+        free(h_gw);
+        cl_tensor_free(grad_w_gpu);
+
+        // grad_b = sum over batch (reduce axis=0)
+        // Download grad, sum over batch, store to grad_b
+        float* h_grad_all = (float*)malloc(grad->nbytes);
+        cl_tensor_download(grad, h_grad_all);
+        float* h_gb = (float*)calloc(out_features, sizeof(float));
+        for (size_t b = 0; b < batch; b++) {
+            for (size_t o = 0; o < out_features; o++) {
+                h_gb[o] += h_grad_all[b * out_features + o];
+            }
+        }
+        cl_tensor_upload(layer->grad_b, h_gb);
+        free(h_grad_all); free(h_gb);
+
+        // grad = grad_input for next iteration
         cl_tensor_free(grad);
-        size_t grad_shape[] = {batch, in_features};
-        grad = cl_tensor_create_from_host(cl, CL_TENSOR_DTYPE_F32,
-                                           CL_TENSOR_LAYOUT_NCHW, grad_shape, 2, h_grad_input);
-        free(h_grad_input);
+        grad = grad_input;
     }
 
     cl_tensor_free(grad);
@@ -414,7 +385,6 @@ static void cl_mlp_backward(CLOpenCL* cl, CLOpenCLMLP* mlp, const CLTensor* grad
  * Gradient Clipping
  * -------------------------------------------------------------------------- */
 static void cl_clip_gradients(CLOpenCL* cl, CLTensor* grad, float max_norm) {
-    (void)cl;  // cl not used in this implementation
     if (!grad) return;
     float* h_grad = (float*)malloc(grad->nbytes);
     cl_tensor_download(grad, h_grad);
@@ -432,9 +402,10 @@ static void cl_clip_gradients(CLOpenCL* cl, CLTensor* grad, float max_norm) {
 }
 
 /* --------------------------------------------------------------------------
- * Update Parameters
+ * Update Parameters (GPU)
  * -------------------------------------------------------------------------- */
-static void cl_mlp_update(CLOpenCL* cl, CLOpenCLMLP* mlp, CLSGDOptimizer* opt) {
+static void cl_mlp_update(CLOpenCL* cl, cl_kernel_cache_t* cache,
+                           CLOpenCLMLP* mlp, CLSGDOptimizer* opt) {
     CLSGDConfig* cfg = &opt->config;
 
     for (size_t i = 0; i < mlp->num_layers; i++) {
@@ -443,73 +414,40 @@ static void cl_mlp_update(CLOpenCL* cl, CLOpenCLMLP* mlp, CLSGDOptimizer* opt) {
         cl_clip_gradients(cl, layer->grad_w, 5.0f);
         cl_clip_gradients(cl, layer->grad_b, 5.0f);
 
-        float* h_w = (float*)malloc(layer->weight->nbytes);
-        float* h_b = (float*)malloc(layer->bias->nbytes);
-        float* h_gw = (float*)malloc(layer->grad_w->nbytes);
-        float* h_gb = (float*)malloc(layer->grad_b->nbytes);
-        cl_tensor_download(layer->weight, h_w);
-        cl_tensor_download(layer->bias, h_b);
-        cl_tensor_download(layer->grad_w, h_gw);
-        cl_tensor_download(layer->grad_b, h_gb);
-
-        size_t w_size = layer->weight->size;
-        size_t b_size = layer->bias->size;
-
+        // SGD update on GPU
         if (opt->velocity_w && opt->velocity_b) {
-            float* h_vw = (float*)malloc(layer->weight->nbytes);
-            float* h_vb = (float*)malloc(layer->bias->nbytes);
-            cl_tensor_download(opt->velocity_w[i], h_vw);
-            cl_tensor_download(opt->velocity_b[i], h_vb);
-
-            for (size_t j = 0; j < w_size; j++) {
-                h_vw[j] = cfg->momentum * h_vw[j] - cfg->lr * h_gw[j] - cfg->weight_decay * h_w[j];
-                h_w[j] += h_vw[j];
-            }
-            for (size_t j = 0; j < b_size; j++) {
-                h_vb[j] = cfg->momentum * h_vb[j] - cfg->lr * h_gb[j];
-                h_b[j] += h_vb[j];
-            }
-
-            cl_tensor_upload(opt->velocity_w[i], h_vw);
-            cl_tensor_upload(opt->velocity_b[i], h_vb);
-            free(h_vw);
-            free(h_vb);
+            cl_tensor_sgd_update_impl(cl, cache, layer->weight, layer->grad_w,
+                                      opt->velocity_w[i], cfg->lr, cfg->momentum, cfg->weight_decay);
+            cl_tensor_sgd_update_impl(cl, cache, layer->bias, layer->grad_b,
+                                      opt->velocity_b[i], cfg->lr, cfg->momentum, 0.0f);
         } else {
-            for (size_t j = 0; j < w_size; j++) {
-                h_w[j] -= cfg->lr * h_gw[j] + cfg->weight_decay * h_w[j];
-            }
-            for (size_t j = 0; j < b_size; j++) {
-                h_b[j] -= cfg->lr * h_gb[j];
-            }
+            // No momentum: pass NULL for velocity
+            CLTensor* null_vel_w = NULL;
+            CLTensor* null_vel_b = NULL;
+            cl_tensor_sgd_update_impl(cl, cache, layer->weight, layer->grad_w,
+                                      null_vel_w, cfg->lr, 0.0f, cfg->weight_decay);
+            cl_tensor_sgd_update_impl(cl, cache, layer->bias, layer->grad_b,
+                                      null_vel_b, cfg->lr, 0.0f, 0.0f);
         }
-
-        cl_tensor_upload(layer->weight, h_w);
-        cl_tensor_upload(layer->bias, h_b);
-
-        free(h_w);
-        free(h_b);
-        free(h_gw);
-        free(h_gb);
     }
 }
 
 /* --------------------------------------------------------------------------
  * Training Step
  * -------------------------------------------------------------------------- */
-static float cl_mlp_train_step(CLOpenCL* cl, CLOpenCLMLP* mlp, CLSGDOptimizer* opt,
-                                const CLTensor* input, const CLTensor* targets) {
-    CLTensor* output = cl_mlp_forward(cl, mlp, input);
+static float cl_mlp_train_step(CLOpenCL* cl, cl_kernel_cache_t* cache,
+                                 CLOpenCLMLP* mlp, CLSGDOptimizer* opt,
+                                 const CLTensor* input, const int* targets) {
+    CLTensor* output = cl_mlp_forward(cl, cache, mlp, input);
 
     float* h_output = (float*)malloc(output->nbytes);
-    float* h_targets = (float*)malloc(targets->nbytes);
     cl_tensor_download(output, h_output);
-    cl_tensor_download(targets, h_targets);
 
     size_t batch = output->shape[0];
     size_t num_classes = output->shape[1];
     float loss = 0.0f;
     for (size_t b = 0; b < batch; b++) {
-        size_t target_class = (size_t)h_targets[b];
+        size_t target_class = (size_t)targets[b];
         float pred_prob = h_output[b * num_classes + target_class];
         if (pred_prob < 1e-10f) pred_prob = 1e-10f;
         loss += -logf(pred_prob);
@@ -517,11 +455,10 @@ static float cl_mlp_train_step(CLOpenCL* cl, CLOpenCLMLP* mlp, CLSGDOptimizer* o
     loss /= batch;
 
     free(h_output);
-    free(h_targets);
 
-    CLTensor* grad = cl_cross_entropy_grad(cl, output, targets);
-    cl_mlp_backward(cl, mlp, grad);
-    cl_mlp_update(cl, mlp, opt);
+    CLTensor* grad = cl_cross_entropy_grad(cl, cache, output, targets, batch, num_classes);
+    cl_mlp_backward(cl, cache, mlp, grad);
+    cl_mlp_update(cl, cache, mlp, opt);
 
     cl_tensor_free(output);
     cl_tensor_free(grad);
@@ -532,21 +469,21 @@ static float cl_mlp_train_step(CLOpenCL* cl, CLOpenCLMLP* mlp, CLSGDOptimizer* o
 /* --------------------------------------------------------------------------
  * Prediction
  * -------------------------------------------------------------------------- */
-static CLTensor* cl_mlp_predict(CLOpenCL* cl, CLOpenCLMLP* mlp, const CLTensor* input) {
-    return cl_mlp_forward(cl, mlp, input);
+static CLTensor* cl_mlp_predict(CLOpenCL* cl, cl_kernel_cache_t* cache,
+                                 CLOpenCLMLP* mlp, const CLTensor* input) {
+    return cl_mlp_forward(cl, cache, mlp, input);
 }
 
 /* --------------------------------------------------------------------------
  * Accuracy
  * -------------------------------------------------------------------------- */
-static float cl_mlp_accuracy(CLOpenCL* cl, CLOpenCLMLP* mlp,
-                              const CLTensor* input, const CLTensor* targets) {
-    CLTensor* pred = cl_mlp_predict(cl, mlp, input);
+static float cl_mlp_accuracy(CLOpenCL* cl, cl_kernel_cache_t* cache,
+                              CLOpenCLMLP* mlp,
+                              const CLTensor* input, const int* targets) {
+    CLTensor* pred = cl_mlp_predict(cl, cache, mlp, input);
 
     float* h_pred = (float*)malloc(pred->nbytes);
-    float* h_targets = (float*)malloc(targets->nbytes);
     cl_tensor_download(pred, h_pred);
-    cl_tensor_download(targets, h_targets);
 
     size_t batch = pred->shape[0];
     size_t num_classes = pred->shape[1];
@@ -561,12 +498,11 @@ static float cl_mlp_accuracy(CLOpenCL* cl, CLOpenCLMLP* mlp,
                 pred_class = c;
             }
         }
-        size_t target_class = (size_t)h_targets[b];
+        size_t target_class = (size_t)targets[b];
         if (pred_class == target_class) correct++;
     }
 
     free(h_pred);
-    free(h_targets);
     cl_tensor_free(pred);
 
     return (float)correct / batch;

@@ -9,11 +9,11 @@
  */
 
 #define TENSOR_IMPLEMENTATION
-#include "tensor.h"
+#include "dl/tensor.h"
 #include "idx.h"
-#include "lenet5.h"
-#include "rnn.h"
-#include "lstm.h"
+#include "dl/lenet5.h"
+#include "dl/rnn.h"
+#include "dl/lstm.h"
 
 #include <stdio.h>
 #include <stdlib.h>

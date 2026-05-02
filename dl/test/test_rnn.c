@@ -3,7 +3,7 @@
  * @brief Test RNN model
  */
 
-#include "rnn.h"
+#include "dl/rnn.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>

@@ -6,10 +6,10 @@
  */
 
 #define TENSOR_IMPLEMENTATION
-#include "tensor.h"
+#include "dl/tensor.h"
 #include "idx.h"
-#include "rnn.h"
-#include "lstm.h"
+#include "dl/rnn.h"
+#include "dl/lstm.h"
 #include "transformer.h"
 
 #include <stdio.h>

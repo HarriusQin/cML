@@ -15,13 +15,13 @@
 #include "machine_learning.h"
 
 #define LINEAR_ALGEBRA_IMPLEMENTATION
-#include "linear_algebra.h"
+#include "linear/linear_algebra.h"
 
 #define MLR_IMPLEMENTATION
-#include "mlr.h"
+#include "linear/mlr.h"
 
 #define SOFTMAX_REGRESSION_IMPLEMENTATION
-#include "softmax_regression.h"
+#include "linear/softmax_regression.h"
 
 #include <stdio.h>
 #include <stdlib.h>

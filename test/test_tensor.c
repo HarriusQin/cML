@@ -4,7 +4,7 @@
  */
 
 #define TENSOR_IMPLEMENTATION
-#include "tensor.h"
+#include "dl/tensor.h"
 
 #include <stdio.h>
 #include <stdlib.h>

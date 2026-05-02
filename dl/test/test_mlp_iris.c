@@ -10,7 +10,7 @@
  */
 
 #define MLP_IMPLEMENTATION
-#include "mlp.h"
+#include "dl/mlp.h"
 
 #define CSV_IMPLEMENTATION
 #include "csv.h"

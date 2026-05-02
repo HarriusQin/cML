@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c99 -lm -I.
+CFLAGS = -Wall -Wextra -std=c99 -D_GNU_SOURCE -lm -I.
 LDFLAGS = -lm -lOpenCL
 BINDIR = bin
 TARGETS = $(BINDIR)/test_csv $(BINDIR)/test_dataset $(BINDIR)/test_iris $(BINDIR)/test_binary $(BINDIR)/test_gnb $(BINDIR)/test_dt $(BINDIR)/test_rf_n_ada $(BINDIR)/test_ml $(BINDIR)/test_softmax_benchmark $(BINDIR)/test_idx $(BINDIR)/test_tensor $(BINDIR)/test_mlp $(BINDIR)/test_lenet5 $(BINDIR)/test_rnn $(BINDIR)/test_lstm $(BINDIR)/test_opencl_tensor $(BINDIR)/test_tensor_benchmark $(BINDIR)/main
@@ -29,8 +29,8 @@ $(BINDIR)/main: main.c csv.h dataset.h machine_learning.h | $(BINDIR)
 $(BINDIR)/test_ml: test/test_ml.c csv.h dataset.h ml_samples.h | $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ test/test_ml.c
 
-$(BINDIR)/test_softmax_benchmark: test/test_softmax_benchmark.c csv.h dataset.h machine_learning.h linear_algebra.h mlr.h softmax_regression.h | $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ test/test_softmax_benchmark.c
+$(BINDIR)/test_softmax_benchmark: linear/test/test_softmax_benchmark.c csv.h dataset.h machine_learning.h linear/linear_algebra.h linear/mlr.h linear/softmax_regression.h | $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ linear/test/test_softmax_benchmark.c
 
 $(BINDIR)/test_gnb: test/test_gnb.c csv.h dataset.h machine_learning.h gnb.h | $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ test/test_gnb.c
@@ -41,36 +41,36 @@ $(BINDIR)/test_dt: test/test_dt.c csv.h dataset.h machine_learning.h decision_tr
 $(BINDIR)/test_idx: test/test_idx.c idx.h | $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ test/test_idx.c
 
-$(BINDIR)/test_tensor: test/test_tensor.c tensor.h | $(BINDIR)
+$(BINDIR)/test_tensor: test/test_tensor.c dl/tensor.h | $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ test/test_tensor.c -lm
 
-$(BINDIR)/test_mlp: test/test_mlp.c mlp.h tensor.h idx.h | $(BINDIR)
+$(BINDIR)/test_mlp: test/test_mlp.c dl/mlp.h dl/tensor.h | $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ test/test_mlp.c -lm
 
-$(BINDIR)/test_rf_n_ada: test/rf_n_ada.c csv.h dataset.h machine_learning.h utilities.h adaboost.h randomforest.h | $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ test/rf_n_ada.c -lm
+$(BINDIR)/test_rf_n_ada: ensemble/test/rf_n_ada.c csv.h dataset.h machine_learning.h utilities.h ensemble/adaboost.h ensemble/randomforest.h | $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ ensemble/test/rf_n_ada.c -lm
 
 # Deep Learning Tests
-$(BINDIR)/test_lenet5: test_lenet5.c lenet5.h tensor.h | $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ test_lenet5.c -lm
+$(BINDIR)/test_lenet5: dl/test/test_lenet5.c dl/lenet5.h dl/tensor.h | $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ dl/test/test_lenet5.c -lm
 
-$(BINDIR)/test_rnn: test_rnn.c rnn.h tensor.h | $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ test_rnn.c -lm
+$(BINDIR)/test_rnn: dl/test/test_rnn.c dl/rnn.h dl/tensor.h | $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ dl/test/test_rnn.c -lm
 
-$(BINDIR)/test_lstm: test_lstm.c lstm.h tensor.h | $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ test_lstm.c -lm
+$(BINDIR)/test_lstm: dl/test/test_lstm.c dl/lstm.h dl/tensor.h | $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ dl/test/test_lstm.c -lm
 
-$(BINDIR)/test_opencl_tensor: test/test_opencl_tensor.c opencl_tensor.h | $(BINDIR)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_opencl_tensor.c
+$(BINDIR)/test_opencl_tensor: dl/test/test_opencl_tensor.c dl/opencl_tensor.h | $(BINDIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ dl/test/test_opencl_tensor.c
 
-$(BINDIR)/test_opencl_mlp: test/test_opencl_mlp.c opencl_mlp.h opencl_tensor.h | $(BINDIR)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_opencl_mlp.c
+$(BINDIR)/test_opencl_mlp: dl/test/test_opencl_mlp.c dl/opencl_mlp.h dl/opencl_tensor.h | $(BINDIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ dl/test/test_opencl_mlp.c
 
-$(BINDIR)/test_opencl_mlp_mnist: test/test_opencl_mlp_mnist.c opencl_mlp.h opencl_tensor.h idx.h | $(BINDIR)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_opencl_mlp_mnist.c
+$(BINDIR)/test_opencl_mlp_mnist: dl/test/test_opencl_mlp_mnist.c dl/opencl_mlp.h dl/opencl_tensor.h idx.h | $(BINDIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ dl/test/test_opencl_mlp_mnist.c
 
-$(BINDIR)/test_tensor_benchmark: test/test_tensor_benchmark.c tensor.h opencl_tensor.h | $(BINDIR)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ test/test_tensor_benchmark.c
+$(BINDIR)/test_tensor_benchmark: dl/test/test_tensor_benchmark.c dl/tensor.h dl/opencl_tensor.h | $(BINDIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ dl/test/test_tensor_benchmark.c
 
 test_dl: $(BINDIR)/test_lenet5 $(BINDIR)/test_rnn $(BINDIR)/test_lstm
 	@echo "=== Running LeNet-5 Tests ==="
@@ -104,6 +104,6 @@ test: $(BINDIR)/test_csv $(BINDIR)/test_dataset $(BINDIR)/test_iris $(BINDIR)/te
 clean:
 	rm -rf $(BINDIR)
 	rm -f test_softmax_benchmark_asan test_lenet5_bin test_mlp_asan test_mlp_iris
-	rm -f test/test_mlp_framework test/test_mlp_iris
+	rm -f dl/test/test_mlp_framework test/test_mlp_iris
 	rm -f tests/test_tensor_edge_cases tests/test_tensor_edge_cases_asan
-	rm -rf *.dSYM tests/*.dSYM
+	rm -rf *.dSYM tests/*.dSYM dl/*.dSYM

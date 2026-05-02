@@ -4,7 +4,7 @@
  */
 
 #include "../opencl_mlp.h"
-#include "../idx.h"
+#include "idx.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -200,8 +200,8 @@ int main(int argc, char* argv[]) {
     CLTensor* y_batch = cl_get_labels(&cl, mnist->train_labels, 0, batch_size);
 
     for (size_t iter = 0; iter < 30; iter++) {
-        float loss = cl_mlp_train_step(&cl, mlp, opt, X_batch, y_batch);
-        float acc = cl_mlp_accuracy(&cl, mlp, X_batch, y_batch);
+        float loss = cl_mlp_train_step(&cl, &cl.kernel_cache, mlp, opt, X_batch, (const int*)(mnist->train_labels));
+        float acc = cl_mlp_accuracy(&cl, &cl.kernel_cache, mlp, X_batch, (const int*)(mnist->train_labels));
 
         if (iter % 10 == 0) {
             printf("Iter %zu: Loss=%.4f, Acc=%.2f%%\n", iter, loss, 100.0f * acc);
@@ -233,27 +233,23 @@ int main(int argc, char* argv[]) {
             size_t start = indices[b * batch_size];
 
             CLTensor* X_batch = cl_get_batch(&cl, mnist->train_images, mnist->train_labels, start, batch_size);
-            CLTensor* y_batch = cl_get_labels(&cl, mnist->train_labels, start, batch_size);
 
-            float loss = cl_mlp_train_step(&cl, mlp, opt, X_batch, y_batch);
+            float loss = cl_mlp_train_step(&cl, &cl.kernel_cache, mlp, opt, X_batch, (const int*)(mnist->train_labels + start));
             epoch_loss += loss;
 
             cl_tensor_free(X_batch);
-            cl_tensor_free(y_batch);
         }
 
         free(indices);
 
-        float epoch_acc = cl_mlp_accuracy(&cl, mlp, X_batch, y_batch);
         printf("Epoch %zu/%zu: avg_loss=%.4f\n", epoch + 1, epochs, epoch_loss / batches_per_epoch);
 
         // Evaluate on test set every epoch
         CLTensor* X_test_eval = cl_get_batch(&cl, mnist->test_images, mnist->test_labels, 0, 1000);
-        CLTensor* y_test_eval = cl_get_labels(&cl, mnist->test_labels, 0, 1000);
-        float test_acc = cl_mlp_accuracy(&cl, mlp, X_test_eval, y_test_eval);
+        float* y_test_labels = mnist->test_labels;
+        float test_acc = cl_mlp_accuracy(&cl, &cl.kernel_cache, mlp, X_test_eval, (const int*)y_test_labels);
         printf("  Test accuracy: %.2f%%\n", 100.0f * test_acc);
         cl_tensor_free(X_test_eval);
-        cl_tensor_free(y_test_eval);
     }
 
     clock_t end = clock();
@@ -272,7 +268,7 @@ int main(int argc, char* argv[]) {
         CLTensor* X_test = cl_get_batch(&cl, mnist->test_images, mnist->test_labels, i, batch);
         CLTensor* y_test = cl_get_labels(&cl, mnist->test_labels, i, batch);
 
-        CLTensor* pred = cl_mlp_predict(&cl, mlp, X_test);
+        CLTensor* pred = cl_mlp_predict(&cl, &cl.kernel_cache, mlp, X_test);
 
         float* h_pred = (float*)malloc(pred->nbytes);
         float* h_test = (float*)malloc(y_test->nbytes);

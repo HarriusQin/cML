@@ -8,7 +8,7 @@
 #include "dataset.h"
 
 #define MLP_IMPLEMENTATION
-#include "mlp.h"
+#include "dl/mlp.h"
 
 #include <stdio.h>
 #include <stdlib.h>

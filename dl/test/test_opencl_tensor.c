@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include "opencl_tensor.h"
+#include "dl/opencl_tensor.h"
 
 static bool float_equal(float a, float b, float eps) {
     return fabsf(a - b) < eps;

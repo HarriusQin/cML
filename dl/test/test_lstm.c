@@ -3,7 +3,7 @@
  * @brief Test LSTM model
  */
 
-#include "lstm.h"
+#include "dl/lstm.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>

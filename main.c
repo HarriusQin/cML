@@ -4,6 +4,7 @@
 #include <time.h>
 #include <stdio.h>
 #include <math.h>
+#include <stdint.h>
 
 typedef struct Matrix
 {

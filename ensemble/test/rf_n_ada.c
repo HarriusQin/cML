@@ -10,10 +10,10 @@
 #include "machine_learning.h"
 #include "utilities.h"
 #define ADABOOST_IMPLEMENTATION
-#include "adaboost.h"
+#include "ensemble/adaboost.h"
 
 #define RANDOMFOREST_IMPLEMENTATION
-#include "randomforest.h"
+#include "ensemble/randomforest.h"
 
 #include <math.h>
 #include <stdbool.h>

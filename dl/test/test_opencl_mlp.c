@@ -9,19 +9,18 @@
  * Simple Synthetic Data Generation for Testing
  * ============================================================================ */
 
-static void generate_xor_data(float* X, float* y, size_t n_samples) {
+static void generate_xor_data(float* X, int* y, size_t n_samples) {
     srand(42);
     for (size_t i = 0; i < n_samples; i++) {
         float x1 = (rand() % 2) ? 1.0f : 0.0f;
         float x2 = (rand() % 2) ? 1.0f : 0.0f;
         X[i * 2] = x1;
         X[i * 2 + 1] = x2;
-        // XOR: 1 if exactly one input is 1
-        y[i] = (x1 != x2) ? 1.0f : 0.0f;
+        y[i] = (x1 != x2) ? 1 : 0;
     }
 }
 
-static int test_xor(CLOpenCL* cl) {
+static int test_xor(CLOpenCL* cl, cl_kernel_cache_t* cache) {
     printf("=== Test: XOR Classification ===\n");
 
     size_t input_dim = 2;
@@ -34,16 +33,13 @@ static int test_xor(CLOpenCL* cl) {
 
     // Generate XOR data
     float* h_X = (float*)malloc(n_samples * input_dim * sizeof(float));
-    float* h_y = (float*)malloc(n_samples * sizeof(float));
+    int* h_y = (int*)malloc(n_samples * sizeof(int));
     generate_xor_data(h_X, h_y, n_samples);
 
     // Convert to CLTensor
     size_t X_shape[] = {n_samples, input_dim};
-    size_t y_shape[] = {n_samples};
     CLTensor* X = cl_tensor_create_from_host(cl, CL_TENSOR_DTYPE_F32,
                                                CL_TENSOR_LAYOUT_NCHW, X_shape, 2, h_X);
-    CLTensor* y = cl_tensor_create_from_host(cl, CL_TENSOR_DTYPE_F32,
-                                               CL_TENSOR_LAYOUT_NCHW, y_shape, 1, h_y);
 
     // Create MLP
     CLOpenCLMLP* mlp = cl_mlp_create(cl, input_dim, hidden_dim, output_dim, num_layers);
@@ -51,14 +47,14 @@ static int test_xor(CLOpenCL* cl) {
 
     printf("  Training XOR problem...\n");
     for (size_t epoch = 0; epoch < epochs; epoch++) {
-        float loss = cl_mlp_train_step(cl, mlp, opt, X, y);
+        float loss = cl_mlp_train_step(cl, cache, mlp, opt, X, h_y);
         if (epoch % 100 == 0) {
-            float acc = cl_mlp_accuracy(cl, mlp, X, y);
+            float acc = cl_mlp_accuracy(cl, cache, mlp, X, h_y);
             printf("  Epoch %zu: loss=%.4f, acc=%.2f%%\n", epoch, loss, acc * 100);
         }
     }
 
-    float final_acc = cl_mlp_accuracy(cl, mlp, X, y);
+    float final_acc = cl_mlp_accuracy(cl, cache, mlp, X, h_y);
     printf("  Final accuracy: %.2f%%\n", final_acc * 100);
 
     // Test predictions on specific cases
@@ -70,7 +66,7 @@ static int test_xor(CLOpenCL* cl) {
         size_t tc_shape[] = {1, 2};
         CLTensor* tc = cl_tensor_create_from_host(cl, CL_TENSOR_DTYPE_F32,
                                                     CL_TENSOR_LAYOUT_NCHW, tc_shape, 2, test_cases[i]);
-        CLTensor* pred = cl_mlp_predict(cl, mlp, tc);
+        CLTensor* pred = cl_mlp_predict(cl, cache, mlp, tc);
 
         float* h_pred = (float*)malloc(pred->nbytes);
         cl_tensor_download(pred, h_pred);
@@ -79,7 +75,7 @@ static int test_xor(CLOpenCL* cl) {
         printf("    (%d, %d) -> %d (expected %d) %s\n",
                (int)test_cases[i][0], (int)test_cases[i][1],
                pred_class, expected[i],
-               pred_class == expected[i] ? "✓" : "✗");
+               pred_class == expected[i] ? "OK" : "FAIL");
 
         free(h_pred);
         cl_tensor_free(pred);
@@ -89,7 +85,6 @@ static int test_xor(CLOpenCL* cl) {
     cl_mlp_free(mlp);
     cl_sgd_free(opt);
     cl_tensor_free(X);
-    cl_tensor_free(y);
     free(h_X);
     free(h_y);
 
@@ -102,7 +97,7 @@ static int test_xor(CLOpenCL* cl) {
     }
 }
 
-static int test_simple_classification(CLOpenCL* cl) {
+static int test_simple_classification(CLOpenCL* cl, cl_kernel_cache_t* cache) {
     printf("=== Test: Simple 2-Class Classification ===\n");
 
     size_t input_dim = 2;
@@ -115,12 +110,12 @@ static int test_simple_classification(CLOpenCL* cl) {
 
     // Generate well-separated data: two clusters at (0,0) and (5,5)
     float* h_X = (float*)malloc(n_samples * input_dim * sizeof(float));
-    float* h_y = (float*)malloc(n_samples * sizeof(float));
+    int* h_y = (int*)malloc(n_samples * sizeof(int));
 
     srand(42);
     for (size_t i = 0; i < n_samples; i++) {
         int cls = (i < n_samples / 2) ? 0 : 1;
-        h_y[i] = (float)cls;
+        h_y[i] = cls;
         if (cls == 0) {
             h_X[i * 2] = (rand() % 100) / 50.0f;       // 0-2
             h_X[i * 2 + 1] = (rand() % 100) / 50.0f;   // 0-2
@@ -131,31 +126,27 @@ static int test_simple_classification(CLOpenCL* cl) {
     }
 
     size_t X_shape[] = {n_samples, input_dim};
-    size_t y_shape[] = {n_samples};
     CLTensor* X = cl_tensor_create_from_host(cl, CL_TENSOR_DTYPE_F32,
                                                CL_TENSOR_LAYOUT_NCHW, X_shape, 2, h_X);
-    CLTensor* y = cl_tensor_create_from_host(cl, CL_TENSOR_DTYPE_F32,
-                                               CL_TENSOR_LAYOUT_NCHW, y_shape, 1, h_y);
 
     CLOpenCLMLP* mlp = cl_mlp_create(cl, input_dim, hidden_dim, output_dim, num_layers);
     CLSGDOptimizer* opt = cl_sgd_create(cl, mlp, lr, 0.0f, 0.0f);
 
     printf("  Training...\n");
     for (size_t epoch = 0; epoch < epochs; epoch++) {
-        float loss = cl_mlp_train_step(cl, mlp, opt, X, y);
+        float loss = cl_mlp_train_step(cl, cache, mlp, opt, X, h_y);
         if (epoch % 100 == 0) {
-            float acc = cl_mlp_accuracy(cl, mlp, X, y);
+            float acc = cl_mlp_accuracy(cl, cache, mlp, X, h_y);
             printf("  Epoch %zu: loss=%.4f, acc=%.2f%%\n", epoch, loss, acc * 100);
         }
     }
 
-    float final_acc = cl_mlp_accuracy(cl, mlp, X, y);
+    float final_acc = cl_mlp_accuracy(cl, cache, mlp, X, h_y);
     printf("  Final accuracy: %.2f%%\n", final_acc * 100);
 
     cl_mlp_free(mlp);
     cl_sgd_free(opt);
     cl_tensor_free(X);
-    cl_tensor_free(y);
     free(h_X);
     free(h_y);
 
@@ -168,7 +159,7 @@ static int test_simple_classification(CLOpenCL* cl) {
     }
 }
 
-static int test_mlp_forward_only(CLOpenCL* cl) {
+static int test_mlp_forward_only(CLOpenCL* cl, cl_kernel_cache_t* cache) {
     printf("=== Test: Forward Pass Only ===\n");
 
     size_t input_dim = 4;
@@ -183,7 +174,7 @@ static int test_mlp_forward_only(CLOpenCL* cl) {
     CLTensor* X = cl_tensor_create_from_host(cl, CL_TENSOR_DTYPE_F32,
                                               CL_TENSOR_LAYOUT_NCHW, shape, 2, h_X);
 
-    CLTensor* output = cl_mlp_predict(cl, mlp, X);
+    CLTensor* output = cl_mlp_predict(cl, cache, mlp, X);
 
     float* h_out = (float*)malloc(output->nbytes);
     cl_tensor_download(output, h_out);
@@ -194,7 +185,7 @@ static int test_mlp_forward_only(CLOpenCL* cl) {
 
     // Check sum to 1 (softmax)
     float sum = h_out[0] + h_out[1] + h_out[2];
-    printf("  Sum: %.4f %s\n", sum, fabsf(sum - 1.0f) < 0.01f ? "✓" : "✗");
+    printf("  Sum: %.4f OK\n", sum, fabsf(sum - 1.0f) < 0.01f ? "OK" : "FAIL");
 
     free(h_out);
     cl_tensor_free(output);
@@ -238,7 +229,7 @@ static int test_layer_creation(CLOpenCL* cl) {
     return 0;
 }
 
-static int test_fc_forward(CLOpenCL* cl) {
+static int test_fc_forward(CLOpenCL* cl, cl_kernel_cache_t* cache) {
     printf("=== Test: FC Layer Forward ===\n");
 
     CLFCLayer* layer = cl_fc_layer_create(cl, 3, 2);
@@ -259,7 +250,7 @@ static int test_fc_forward(CLOpenCL* cl) {
     CLTensor* X = cl_tensor_create_from_host(cl, CL_TENSOR_DTYPE_F32,
                                               CL_TENSOR_LAYOUT_NCHW, shape, 2, h_x);
 
-    CLTensor* output = cl_fc_layer_forward(cl, layer, X);
+    CLTensor* output = cl_fc_layer_forward(cl, cache, layer, X);
 
     float* h_out = (float*)malloc(output->nbytes);
     cl_tensor_download(output, h_out);
@@ -268,7 +259,7 @@ static int test_fc_forward(CLOpenCL* cl) {
     printf("  Output: [%.4f, %.4f]\n", h_out[0], h_out[1]);
 
     int passed = (fabsf(h_out[0] - 1.0f) < 0.01f && fabsf(h_out[1] - 2.0f) < 0.01f);
-    printf("  Expected: [1.0, 2.0] %s\n", passed ? "✓" : "✗");
+    printf("  Expected: [1.0, 2.0] %s\n", passed ? "OK" : "FAIL");
 
     free(h_out);
     free(h_w);
@@ -285,7 +276,7 @@ static int test_fc_forward(CLOpenCL* cl) {
     return 1;
 }
 
-static int test_relu(CLOpenCL* cl) {
+static int test_relu(CLOpenCL* cl, cl_kernel_cache_t* cache) {
     printf("=== Test: ReLU ===\n");
 
     float h_x[] = {-1.0f, 2.0f, -3.0f, 4.0f, 5.0f, -6.0f};
@@ -296,7 +287,7 @@ static int test_relu(CLOpenCL* cl) {
                                               CL_TENSOR_LAYOUT_NCHW, shape, 2, h_x);
 
     CLTensor* mask = NULL;
-    CLTensor* result = cl_relu_forward(cl, X, &mask);
+    CLTensor* result = cl_relu_forward(cl, cache, X, &mask);
 
     float* h_out = (float*)malloc(result->nbytes);
     cl_tensor_download(result, h_out);
@@ -314,10 +305,8 @@ static int test_relu(CLOpenCL* cl) {
            h_out[0], h_out[1], h_out[2], h_out[3], h_out[4], h_out[5]);
 
     free(h_out);
-    // result == X (cl_relu_forward modifies in place and returns same pointer)
     cl_tensor_free(result);
     if (mask) cl_tensor_free(mask);
-    // Don't free X again - it's the same as result
 
     if (passed) {
         printf("  PASSED\n");
@@ -344,15 +333,21 @@ int main(void) {
     cl_print_device_info(cl.device);
     printf("\n");
 
+    // Compile kernel cache once
+    cl_kernel_cache_t cache;
+    memset(&cache, 0, sizeof(cache));
+    cl_compile_kernels(&cl, &cache);
+
     int failed = 0;
 
     failed += test_layer_creation(&cl);
-    failed += test_fc_forward(&cl);
-    failed += test_relu(&cl);
-    failed += test_mlp_forward_only(&cl);
-    failed += test_xor(&cl);
-    failed += test_simple_classification(&cl);
+    failed += test_fc_forward(&cl, &cache);
+    failed += test_relu(&cl, &cache);
+    failed += test_mlp_forward_only(&cl, &cache);
+    failed += test_xor(&cl, &cache);
+    failed += test_simple_classification(&cl, &cache);
 
+    cl_release_cache(&cache);
     cl_release(&cl);
 
     printf("\n====================\n");
