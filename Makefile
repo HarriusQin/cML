@@ -42,25 +42,25 @@ $(BINDIR)/test_dataset: test/test_dataset.c csv.h dataset.h | $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ test/test_dataset.c
 
 $(BINDIR)/test_iris: test/test_iris.c csv.h dataset.h machine_learning.h | $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ test/test_iris.c
+	$(CC) $(CFLAGS) -o $@ test/test_iris.c $(LDFLAGS)
 
 $(BINDIR)/test_binary: test/test_binary.c csv.h dataset.h machine_learning.h | $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ test/test_binary.c
+	$(CC) $(CFLAGS) -o $@ test/test_binary.c $(LDFLAGS)
 
 $(BINDIR)/main: main.c csv.h dataset.h machine_learning.h | $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ main.c
+	$(CC) $(CFLAGS) -o $@ main.c $(LDFLAGS)
 
 $(BINDIR)/test_ml: test/test_ml.c csv.h dataset.h ml_samples.h | $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ test/test_ml.c
+	$(CC) $(CFLAGS) -o $@ test/test_ml.c $(LDFLAGS)
 
 $(BINDIR)/test_softmax_benchmark: linear/test/test_softmax_benchmark.c csv.h dataset.h machine_learning.h linear/linear_algebra.h linear/mlr.h linear/softmax_regression.h | $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ linear/test/test_softmax_benchmark.c
+	$(CC) $(CFLAGS) -o $@ linear/test/test_softmax_benchmark.c $(LDFLAGS)
 
 $(BINDIR)/test_gnb: test/test_gnb.c csv.h dataset.h machine_learning.h gnb.h | $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ test/test_gnb.c
+	$(CC) $(CFLAGS) -o $@ test/test_gnb.c $(LDFLAGS)
 
 $(BINDIR)/test_dt: test/test_dt.c csv.h dataset.h machine_learning.h decision_tree.h | $(BINDIR)
-	$(CC) $(CFLAGS) -o $@ test/test_dt.c
+	$(CC) $(CFLAGS) -o $@ test/test_dt.c $(LDFLAGS)
 
 $(BINDIR)/test_idx: test/test_idx.c idx.h | $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ test/test_idx.c
